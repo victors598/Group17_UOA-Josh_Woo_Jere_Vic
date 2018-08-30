@@ -1,1 +1,131 @@
+/*
+ * Group17_C_Section.c
+ *
+ * Created: 30/08/2018 1:00:57 PM
+ * Author : vsta598
+ */ 
 
+
+//~~~~~~~~~~~~~~~~~~~~~Includes~~~~~~~~~~~~~~~~~~~~~~//
+#include <avr/io.h>
+
+//~~~~~~~~~~~~~~~~~~~~~Definitions~~~~~~~~~~~~~~~~~~~~~~//
+#define FOSC 16000000 //Clock frequency of the micro controller
+#define BAUD_RATE 9600
+#define UBRR 103 //UBRR is calculated using the following equation ((FOSC/(16*(BAUD_RATE)))-1)
+#define READY_TO_LOAD UCSR0A&(1<<UDRE0) //Tests if the data register empty bit is 1.
+#define BCD_1 16 //Added to output packet so that VHDL logic can display the value in the correct place.
+#define BCD_2 32 
+#define BCD_3 48 
+#define VOLTAGE 64 //Added to output packet so that VHDL logic can differentiate what parameter the 
+#define CURRENT 128 //data packet is sending.
+#define POWER 192
+
+
+//~~~~~~~~~~~~~~~~~~~~~Function Prototypes~~~~~~~~~~~~~~~~~~~~~~//
+void usart_transmit(uint8_t data);
+void usart_init(uint16_t ubrr);
+void convert_for_transmit(uint16_t reading, char parameter, uint8_t *output_array);
+
+
+//~~~~~~~~~~~~~~~~~~~~~Main Function~~~~~~~~~~~~~~~~~~~~~~//
+int main(void)
+{
+	//~~~~~~~~~~~~~~~~~~~~~Initializations~~~~~~~~~~~~~~~~~~~~~~//
+	usart_init(UBRR);
+	
+	//~~~~~~~~~~~~~~~~~~~~~Variable Declarations~~~~~~~~~~~~~~~~~~~~~~//
+	uint16_t i_rms = 133;
+	uint16_t v_peak = 918;
+	uint16_t p_avg = 59;
+	
+	uint8_t v_trans[4] = {0,0,0,0}; //Voltage value to be transmitted.
+	uint8_t i_trans[4] = {0,0,0,0}; //Current value to be transmitted.
+	uint8_t p_trans[4] = {0,0,0,0}; //Power value to be transmitted.
+	
+	//Array of pointers which points to the arrays that hold the individual digits of RMS current,
+	//v peak, and average power, to be sent by the micro controller. 
+	uint8_t *outputPTR[3] = {v_trans, i_trans, p_trans};
+	
+	
+	
+    /* Replace with your application code */
+    while (1) 
+    {
+		convert_for_transmit(v_peak, 'v', v_trans);
+		convert_for_transmit(i_rms, 'i', i_trans);
+		convert_for_transmit(p_avg, 'p', p_trans);
+		
+		//Nested for loop that transmits the individual digits for the RMS current,
+		//peak voltage, and average power.
+		for(uint8_t i = 0; i < 3; i++){
+			uint8_t *arrayPTR = outputPTR[i]; //Pointer to 
+			
+			for(uint8_t j = 0; j < 4; j++){
+				usart_transmit(*arrayPTR);
+				arrayPTR++;
+				
+			} 
+		}
+		
+    }
+}
+
+
+//~~~~~~~~~~~~~~~~~~~~~Functions~~~~~~~~~~~~~~~~~~~~~~//
+
+/*This is a function that will be used to load data to the UDR0 register so that it can 
+be transmitted via the blue tooth module.*/
+void usart_transmit(uint8_t data)
+{
+	while(!(READY_TO_LOAD)); //Wait while UDR0 is full..
+	
+	UDR0 = data; //When UDR0 is empty the while loop will end and we can put new data in.
+		
+}
+
+/*This is a function that will initialize the micro controller to our desired settings
+USART settings = 8 bit data packet, no parity bit, 1 stop bit, transmitter, baud rate  = 9600.
+ADC settings = 
+Interrupt settings = */
+void usart_init(uint16_t ubrr)
+{
+	UCSR0B |= (1 << TXEN0); //Enable the micro controller to transmit data.
+	UBRR0 |= ubrr;
+	
+}
+
+/*This is a function that will be used to convert the RMS current, peak voltage and average power
+into our desired data packet format. So that it can be read by our VHDL logic.*/
+void convert_for_transmit(uint16_t reading, char parameter, uint8_t *output_array)
+{
+	uint8_t first_2_digits;
+	
+	 output_array[1] = reading/100; //stores the leftmost decimal point
+	 output_array[1] += BCD_1; //adds to the data packet which BCD segment will display this value.
+	 
+	 output_array[2] = (reading%100)/10; //stores the middle decimal point
+	 output_array[2] += BCD_2;
+	 
+	 output_array[3] = (reading%100)%10; //stores the rightmost decimal point
+	 output_array[3] += BCD_3;
+	 
+	 //Conditionals that figures out what parameter the data packet will hold.
+	 if(parameter  == 'v'){
+		 first_2_digits = VOLTAGE;
+		 
+	 } else if(parameter == 'i'){
+		 first_2_digits = CURRENT;
+		 
+	 } else if(parameter == 'p') {
+		 first_2_digits = POWER;
+		 
+	 }
+	 
+	 //For loop that adds the parameter to the data packet.
+	 for(uint8_t i = 0; i < 4; i++){
+		 output_array[i] += first_2_digits;
+		 
+	 }
+	 
+}
