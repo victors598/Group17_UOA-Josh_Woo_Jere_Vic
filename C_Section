@@ -9,40 +9,15 @@
 //~~~~~~~~~~~~~~~~~~~~~Includes~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 #include <avr/io.h>
 #include <avr/interrupt.h>
-
-
-//~~~~~~~~~~~~~~~~~~~~~Definitions~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-#define FOSC 16000000 //Clock frequency of the micro controller
-#define BAUD_RATE 9600
-#define UBRR 103 //UBRR is calculated using the following equation ((FOSC/(16*(BAUD_RATE)))-1)
-#define READY_TO_LOAD UCSR0A&(1<<UDRE0) //Tests if the data register empty bit is 1.
-#define BCD_1 16 //Added to output packet so that VHDL logic can display the value in the correct place.
-#define BCD_2 32 
-#define BCD_3 48 
-#define VOLTAGE 64 //Added to output packet so that VHDL logic can differentiate what parameter the 
-#define CURRENT 128 //data packet is sending.
-#define POWER 192
-#define CONVERSION_IN_PROGRESS ADCSRA&(1<<ADSC) //Checks if an ADC conversion is still occurring.
-
-
-//~~~~~~~~~~~~~~~~~~~~~Function Prototypes~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-//Initialization Prototypes:
-void usart_init(uint16_t ubrr);
-void ADC_init();
-void interrupt_init();
-
-//Transmission Relevant Prototypes:
-void usart_transmit(uint8_t data);
-void convert_for_transmit(uint16_t reading, char parameter, uint8_t *output_array);
-
-//ADC Relevant Prototypes:
-uint16_t get_reading ();
-
-//Interrupt Relevant Prototypes:
-ISR(INT0_vect);
+#include "usart.h"
+#include "adc.h"
+#include "interrupt.h"
+#include "algorithm.h"
 
 
 //~~~~~~~~~~~~~~~~~~~~~Global Variables~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
+volatile uint8_t sampling = 0;
+volatile uint8_t skip = 1;
 
 //~~~~~~~~~~~~~~~~~~~~~Main Function~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 int main(void)
@@ -50,162 +25,78 @@ int main(void)
 	//~~~~~~~~~~~~~~~~~~~~~Initializations~~~~~~~~~~~~~~~~~~~~~~//
 	usart_init(UBRR);
 	ADC_init();
-	interrupt_init();
+	enable_ext_interrupt();
 	sei(); //Enable global interrupts.
 	
 	
 	//~~~~~~~~~~~~~~~~~~~~~Variable Declarations~~~~~~~~~~~~~~~~~~~~~~~~~~//
+	
+	//TEST VARIABLES//
 	uint16_t i_rms = 133;
 	uint16_t v_peak = 918;
 	uint16_t p_avg = 59;
-	
 	uint8_t v_trans[4] = {0,0,0,0}; //Voltage value to be transmitted.
 	uint8_t i_trans[4] = {0,0,0,0}; //Current value to be transmitted.
 	uint8_t p_trans[4] = {0,0,0,0}; //Power value to be transmitted.
 	
+	//ADC VARIABLES//
+	uint16_t voltageSense[MAX_NUM_OF_SAMPLES];
+	uint16_t currentSense[MAX_NUM_OF_SAMPLES];
+	uint8_t firstInterrupt = 1;
+	
+	
 	//Array of pointers which points to the arrays that hold the individual digits of RMS current,
 	//v peak, and average power, to be sent by the micro controller. 
-	uint8_t *outputPTR[3] = {v_trans, i_trans, p_trans};
+	uint8_t *outputPTRs[3] = {v_trans, i_trans, p_trans}; 
 	
 	
 	
-    /* Replace with your application code */
+    //~~~~~~~~~~~~~~~~~~~~~While Loop~~~~~~~~~~~~~~~~~~~~~~~~~~//
     while (1) 
     {
-		convert_for_transmit(v_peak, 'v', v_trans);
-		convert_for_transmit(i_rms, 'i', i_trans);
-		convert_for_transmit(p_avg, 'p', p_trans);
-		
-		//Nested for loop that transmits the individual digits for the RMS current,
-		//peak voltage, and average power.
-		for(uint8_t i = 0; i < 3; i++){
-			uint8_t *arrayPTR = outputPTR[i]; //Pointer that will point to a specific array.
+		//When the first interrupt occurs then we will sample the voltage, when a second interrupt occurs then we will sample current.
+		//"Skip" variable prevents us from entering the function until an interrupt is called. Otherwise there may be a situation
+		//where the interrupt will occur whilst we are inside the function.
+		if(firstInterrupt && !(skip)){
+			disable_ext_interrupt(); //Disable interrupts from Pin 32.
+			skip = sampleWaveform(voltageSense);
+			firstInterrupt = 0;
 			
-			for(uint8_t j = 0; j < 4; j++){
-				usart_transmit(*arrayPTR);
-				arrayPTR++;
-				
-			} 
+		} else if (!(firstInterrupt) && !(skip)){
+			//add disable global interrupts.
+			sampling = sampleWaveform(currentSense, sampling);
+			firstInterrupt = 1;
+			
 		}
 		
+		
+		if(!(skip)){
+			//For loop that converts all ADC values to their load voltage and current values.
+			for(uint8_t i = 0; i < MAX_NUM_OF_SAMPLES; i++){
+				voltageSense[i] = convertADC(voltageSense[i]);
+				voltageSense[i] = removeOffsetAndGain(voltageSense[i], 'v');
+				voltageSense[i] = getTrueValues(voltageSense[i], 'v');
+				
+				currentSense[i] = convertADC(currentSense[i]);
+				currentSense[i] = removeOffsetAndGain(currentSense[i], 'i');
+				currentSense[i] = getTrueValues(currentSense[i],'i');
+				
+			}
+			
+			
+			convertForTransmit(v_peak, 'v', v_trans);
+			convertForTransmit(i_rms, 'i', i_trans);
+			convertForTransmit(p_avg, 'p', p_trans);
+			
+			sendToCPLD(outputPTRs);
+			
+		
+		}
+			
+		
+		
+		
     }
-}
 
 
-//~~~~~~~~~~~~~~~~~~~~~Functions~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-
-
-//~~~~~~~~~~~~~~~~~~~~~Initialization Functions~~~~~~~~~~~~~~~~~~~~~~~~~~//
-
-/*This is a function that will initialize the USART peripheral to our desired settings.
-
-USART settings => 8 bit data packet, no parity bit, 1 stop bit, transmitter, baud rate  = 9600.
-*/
-void usart_init(uint16_t ubrr){
-	UCSR0B |= (1 << TXEN0); //Enable the micro controller to transmit data.
-	UBRR0 |= ubrr; //Set baud rate.
-	
-}
-
-/*This is a function that will initialize the ADC peripheral to our desired settings.
-
-ADC settings => Vref = 5V, ADC reads from  channel ADC0, turns ON the ADC, sets prescaler to x64
-                , enables auto triggering, and sets trigger source to an external interrupt request.
-*/
-void ADC_init(){
-	//Questions for Travis: Should I set up the DDR stuff as all outputs and then set the necessary input pins as input?
-	//						Does that mean I don't have to set up TXEN0, it will be labeled as an output when I make DDR stuff outputs?
-	//						Does setting stuff to outputs make it reduce power?
-	//						Can't turn off ADC7D any other way to access this register?
-	//						Set PE3(ADC7/PTCY/T3/MOSI1) to 1, i.e. keep it high to prevent it floating, therefore reducing power consumption?
-	
-	ADCSRA |= ((1 << ADEN) | (1 << ADATE) | (1 << ADPS2) | (1 << ADPS1)); //Enable ADC, enable auto-trigger, prescaler select.
-	ADCSRB |= (1 << ADTS1); //Trigger source = external interrupt request.
-	ADMUX |= (1 << REFS0); //5V reference.
-	DIDR0 |= ((1 << ADC2D) | (1 << ADC3D) | (1 << ADC5D)); //Disable some ADC pin to reduce power consumption.
-	
-}
-
-/*This is a function that will set up the micro controller to call External Interrupt 0 
-when a rising edge is detected on Pin 32 (INT0). 
-*/
-void interrupt_init(){
-	EICRA |= ((1 << ISC01) | (1 << ISC00)); //Detect on Rising edge.
-	EIMSK |= (1 << INT0); //Rising edge detected on pin 32.
-	
-}
-
-
-//~~~~~~~~~~~~~~~~~~~~~USART Relevant Functions~~~~~~~~~~~~~~~~~~~~~~~~~~//
-
-/*This is a function that will be used to load data to the UDR0 register so that it can
-be transmitted via the blue tooth module.*/
-void usart_transmit(uint8_t data)
-{
-	while(!(READY_TO_LOAD)); //Wait while UDR0 is full..
-	
-	UDR0 = data; //When UDR0 is empty the while loop will end and we can put new data in.
-	
-}
-
-
-/*This is a function that will be used to convert the RMS current, peak voltage and average power
-into our desired data packet format. So that it can be read by our VHDL logic.*/
-void convert_for_transmit(uint16_t reading, char parameter, uint8_t *output_array){
-	uint8_t first_2_digits;
-	
-	 output_array[1] = reading/100; //stores the leftmost decimal point
-	 output_array[1] += BCD_1; //adds to the data packet which BCD segment will display this value.
-	 
-	 output_array[2] = (reading%100)/10; //stores the middle decimal point
-	 output_array[2] += BCD_2;
-	 
-	 output_array[3] = (reading%100)%10; //stores the rightmost decimal point
-	 output_array[3] += BCD_3;
-	 
-	 //Conditionals that figures out what parameter the data packet will hold.
-	 if(parameter  == 'v'){
-		 first_2_digits = VOLTAGE;
-		 
-	 } else if(parameter == 'i'){
-		 first_2_digits = CURRENT;
-		 
-	 } else if(parameter == 'p') {
-		 first_2_digits = POWER;
-		 
-	 }
-	 
-	 //For loop that adds the parameter to the data packet.
-	 for(uint8_t i = 0; i < 4; i++){
-		 output_array[i] += first_2_digits;
-		 
-	 }
-	 
-}
-
-
-//~~~~~~~~~~~~~~~~~~~~~ADC Relevant Functions~~~~~~~~~~~~~~~~~~~~~~~~~~//
-
-/* This is a function that will get a reading from the ADC whilst it is operating in free running mode
-Reading ADCL blocks ADC from outputting to the data register. Reading ADCH re-enables access for the ADC.
-*/
-uint16_t get_reading (){
-	uint16_t result;
-	
-	while(CONVERSION_IN_PROGRESS){
-		//Do nothing.
-	}
-	
-	result = ADCL; //ADCL must be read first. Otherwise next conversion will be ignored, as data register is blocked.
-	result |= ADCH; 
-	
-	return result;
-	
-}
-
-//~~~~~~~~~~~~~~~~~~~~~Interrupt Relevant Functions~~~~~~~~~~~~~~~~~~~~~~~~~~//
-
-//This is a function that is called when a rising edge is produced from the comparator in our circuitry.
-ISR(INT0_vect){
-	
 }
