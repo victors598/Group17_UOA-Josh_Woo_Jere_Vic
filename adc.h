@@ -12,6 +12,9 @@
 
 #define CONVERSION_IN_PROGRESS (ADCSRA&(1<<ADSC)) //Checks if an ADC conversion is in progress.
 #define MAX_ADC_BITS 1024
+#define ROW_SIZE 2
+#define FIRST_ROW 0
+#define SECOND_ROW 1
 #define CYCLES_SAMPLED 7
 #define SAMPLES_PER_CYCLE 19
 #define MAX_NUM_OF_SAMPLES ((CYCLES_SAMPLED)*(SAMPLES_PER_CYCLE))
