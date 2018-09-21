@@ -16,8 +16,7 @@
 
 
 //~~~~~~~~~~~~~~~~~~~~~Global Variables~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
-volatile uint8_t sampling = 0;
-volatile uint8_t skip = 1;
+volatile uint8_t skip = 1; //acts as a boolean.
 
 //~~~~~~~~~~~~~~~~~~~~~Main Function~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 int main(void)
@@ -40,9 +39,12 @@ int main(void)
 	uint8_t p_trans[4] = {0,0,0,0}; //Power value to be transmitted.
 	
 	//ADC VARIABLES//
-	uint16_t voltageSense[MAX_NUM_OF_SAMPLES];
-	uint16_t currentSense[MAX_NUM_OF_SAMPLES];
+	uint16_t voltageSense[ROW_SIZE][MAX_NUM_OF_SAMPLES];
+	uint16_t currentSense[ROW_SIZE][MAX_NUM_OF_SAMPLES];
 	uint8_t firstInterrupt = 1;
+	
+	//Control Variables
+	uint8_t process = 0; //acts as a boolean.
 	
 	
 	//Array of pointers which points to the arrays that hold the individual digits of RMS current,
@@ -58,19 +60,21 @@ int main(void)
 		//"Skip" variable prevents us from entering the function until an interrupt is called. Otherwise there may be a situation
 		//where the interrupt will occur whilst we are inside the function.
 		if(firstInterrupt && !(skip)){
-			disable_ext_interrupt(); //Disable interrupts from Pin 32.
+			noInterrupt(); //Disable interrupts from Pin 32.
 			skip = sampleWaveform(voltageSense);
 			firstInterrupt = 0;
+			continueInterrupt(); //Renable interrupts from Pin 32.
 			
 		} else if (!(firstInterrupt) && !(skip)){
-			//add disable global interrupts.
-			sampling = sampleWaveform(currentSense, sampling);
+			noInterrupt();
+			skip = sampleWaveform(currentSense);
 			firstInterrupt = 1;
+			process = 1;
 			
 		}
 		
-		
-		if(!(skip)){
+		//Only enter the for loop when we have meaningful values.
+		if(process){
 			//For loop that converts all ADC values to their load voltage and current values.
 			for(uint8_t i = 0; i < MAX_NUM_OF_SAMPLES; i++){
 				voltageSense[i] = convertADC(voltageSense[i]);
@@ -83,17 +87,14 @@ int main(void)
 				
 			}
 			
-			
-			convertForTransmit(v_peak, 'v', v_trans);
-			convertForTransmit(i_rms, 'i', i_trans);
-			convertForTransmit(p_avg, 'p', p_trans);
-			
-			sendToCPLD(outputPTRs);
-			
+		}	
 		
-		}
-			
 		
+		convertForTransmit(v_peak, 'v', v_trans);
+		convertForTransmit(i_rms, 'i', i_trans);
+		convertForTransmit(p_avg, 'p', p_trans);
+		
+		sendToCPLD(outputPTRs);
 		
 		
     }
