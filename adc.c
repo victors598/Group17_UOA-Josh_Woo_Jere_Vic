@@ -46,11 +46,11 @@ uint16_t getReading (){
 //After an external interrupt has occurred this function will be called. It will read from the ADC data register
 //after each conversion has occurred and will store the result in an array that is passed into the function.
 //The function will keep sampling until the array is full. 
-uint8_t sampleWaveform(uint16_t samplingArr[]){
+uint8_t sampleWaveform(uint16_t samplingArr[][]){
 	uint8_t count = 0;
 	
 	while(count < MAX_NUM_OF_SAMPLES){
-		samplingArr[count] = getReading();
+		samplingArr[FIRST_ROW][count] = getReading();
 		count++;
 		
 	}
